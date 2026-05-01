@@ -1,0 +1,56 @@
+# Sketch of an `alternateConfig:` override that swaps the `debug`
+# exporter for an `otlp` exporter pointing at a real backend (here:
+# Tempo via rules_tempo's in-cluster Service). Apply by passing this
+# values file to a custom `tempo_install`-like macro, OR re-render
+# rules_otel's manifest with this values overlay.
+#
+# Not exercised by v0.1's smoke — the smoke uses the debug exporter
+# so it can grep stdout for the marker. A realistic consumer will
+# replace this with their own backend / vendor.
+---
+# Use as `helm install --values backend_export.yaml ...` or as
+# `mimir-values.yaml`-style override when re-rendering rules_otel's
+# manifest.
+mode: deployment
+replicaCount: 1
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+alternateConfig:
+  receivers:
+    otlp:
+      protocols:
+        grpc: {endpoint: "${env:MY_POD_IP}:4317"}
+        http: {endpoint: "${env:MY_POD_IP}:4318"}
+  processors:
+    batch: {}
+    # Add resource attributes for downstream backends (Tempo / Mimir
+    # / Loki all index by service.name — set it explicitly).
+    resource:
+      attributes:
+        - key: deployment.environment
+          value: production
+          action: upsert
+  exporters:
+    # OTLP/gRPC exporter pointing at Tempo's in-cluster Service.
+    # rules_tempo exposes the Service at `tempo.tempo.svc.cluster.local:4317`.
+    otlp/tempo:
+      endpoint: tempo.tempo.svc.cluster.local:4317
+      tls:
+        insecure: true
+    # Same shape would work for Mimir (port 9095 for OTLP), Loki, etc.
+    # otlphttp/mimir:
+    #   endpoint: http://mimir-gateway.mimir.svc.cluster.local/otlp
+    #   tls:
+    #     insecure: true
+  extensions:
+    health_check:
+      endpoint: ${env:MY_POD_IP}:13133
+  service:
+    extensions: [health_check]
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [batch, resource]
+        exporters: [otlp/tempo]

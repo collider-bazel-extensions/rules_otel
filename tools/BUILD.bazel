@@ -1,0 +1,25 @@
+"""Maintainer-only render flow."""
+
+load("@rules_helm//:defs.bzl", "helm_template")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+# ---- 0.153.0 ----------------------------------------------------------------
+
+helm_template(
+    name = "render_otel_0_153_0",
+    chart = ["@otel_chart_0_153_0//:files"],
+    values = ["//config:otel-values.yaml"],
+    namespace = "otel",
+    release_name = "otel",
+)
+
+sh_binary(
+    name = "render_writeback_0_153_0",
+    srcs = ["writeback.sh"],
+    data = [":render_otel_0_153_0"],
+    args = [
+        "$(rootpath :render_otel_0_153_0)",
+        "private/manifests/otel.yaml",
+    ],
+    visibility = ["//visibility:public"],
+)

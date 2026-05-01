@@ -1,0 +1,85 @@
+# Render-time values for rules_otel's pinned manifest.
+#
+# Smoke-fixture footprint: collector in `deployment` mode (gateway
+# topology), single replica, OTLP receiver only, debug exporter at
+# `verbosity: detailed` (so received telemetry is printed to stdout
+# with attribute-level detail — the smoke greps the pod logs for a
+# unique marker attribute to assert round-trip).
+#
+# Production deployments override `mode` (often `daemonset` for node-
+# local agents), the receivers (add jaeger / zipkin / prometheus /
+# k8s_events / etc.), and the exporters (point at Tempo / Mimir /
+# Loki / etc.).
+
+# ---- topology ---------------------------------------------------------------
+mode: deployment
+replicaCount: 1
+
+# ---- image ------------------------------------------------------------------
+# Chart requires `image.repository` explicitly (no default — the chart
+# fails template rendering with "image.repository must be set" if you
+# omit it). Two valid choices:
+#   - `otel/opentelemetry-collector-contrib` — the "contrib" build with
+#     all upstream receivers / processors / exporters (jaeger, zipkin,
+#     k8s, prometheusremotewrite, otelarrow, etc.). ~250MB. Used here so
+#     the smoke + downstream consumers don't have to re-pin when they
+#     add a real backend exporter.
+#   - `otel/opentelemetry-collector` — the slim "core" build (only the
+#     stable components). Smaller (~100MB) but most realistic exporters
+#     aren't in it. Requires `command.name: otelcol` (the contrib
+#     entrypoint is `otelcol-contrib`, which is the chart's default).
+# v0.1 picks the contrib image.
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+# ---- collector config -------------------------------------------------------
+# `alternateConfig` replaces the chart's default `config:` outright
+# (no merge). The chart's default `config:` includes jaeger + zipkin +
+# prometheus receivers and metrics + logs pipelines we don't need for
+# v0.1's smoke; helm's deep-merge would leave them around even with
+# overrides, and `null` removal is broken for subchart-style merges.
+# `alternateConfig` is the chart's documented escape hatch.
+alternateConfig:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:4317
+        http:
+          endpoint: ${env:MY_POD_IP}:4318
+  processors:
+    batch: {}
+  exporters:
+    # `verbosity: detailed` makes the debug exporter print each span /
+    # metric / log record with all its attributes, not just a count.
+    # The smoke grep depends on the marker attribute appearing in stdout.
+    debug:
+      verbosity: detailed
+  extensions:
+    # The chart hard-requires the health_check extension — readiness
+    # and liveness probes hit it. Removing it = pod never reports Ready.
+    health_check:
+      endpoint: ${env:MY_POD_IP}:13133
+  service:
+    extensions: [health_check]
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [debug]
+      metrics:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [debug]
+      logs:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [debug]
+
+# ---- minor smoke niceties ---------------------------------------------------
+# Off — chart-bundled ServiceMonitor would require Prometheus Operator
+# CRDs in the cluster; smoke doesn't need it.
+serviceMonitor:
+  enabled: false
+podMonitor:
+  enabled: false

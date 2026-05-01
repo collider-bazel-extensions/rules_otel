@@ -1,0 +1,79 @@
+"""Tests for rules_otel.
+
+- Analysis test verifies the macro instantiates cleanly.
+- Smoke composition: kind cluster + OpenTelemetry Collector
+  (deployment mode, OTLP receiver, debug exporter at verbosity:
+  detailed). Smoke `kubectl run`s a curl pod, POSTs an OTLP/JSON
+  trace at `<svc>:4318/v1/traces` with a unique marker attribute,
+  then greps the collector pod's logs for that marker — proves the
+  receiver → batch processor → debug exporter pipeline end-to-end.
+"""
+
+load("@rules_itest//:itest.bzl", "itest_service", "service_test")
+load("@rules_kind//:defs.bzl", "kind_cluster", "kind_health_check")
+load("@rules_otel//:defs.bzl", "otel_health_check", "otel_install")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":analysis_tests.bzl", "otel_install_test_suite")
+
+# ---- analysis ---------------------------------------------------------------
+
+otel_install_test_suite(name = "otel_install_analysis")
+
+# ---- smoke composition ------------------------------------------------------
+
+kind_cluster(name = "cluster", k8s_version = "1.32")
+kind_health_check(name = "cluster_health", cluster = ":cluster")
+itest_service(
+    name = "kind_svc",
+    exe = ":cluster",
+    health_check = ":cluster_health",
+    tags = ["manual"],
+)
+
+otel_install(
+    name = "otel_install_bin",
+    tags = ["manual"],
+)
+
+otel_health_check(
+    name = "otel_health_bin",
+    tags = ["manual"],
+)
+
+sh_binary(
+    name = "otel_install_wrapper",
+    srcs = ["install_wrapper.sh"],
+    data = [":otel_install_bin"],
+)
+
+sh_binary(
+    name = "otel_health_wrapper",
+    srcs = ["health_wrapper.sh"],
+    data = [":otel_health_bin"],
+)
+
+itest_service(
+    name = "otel_svc",
+    exe = ":otel_install_wrapper",
+    deps = [":kind_svc"],
+    health_check = ":otel_health_wrapper",
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "smoke_test_bin",
+    srcs = ["smoke_test.sh"],
+    tags = ["manual"],
+)
+
+service_test(
+    name = "smoke_test",
+    services = [":otel_svc"],
+    test = ":smoke_test_bin",
+    tags = [
+        "manual",
+        "no-sandbox",
+        "requires-network",
+    ],
+)

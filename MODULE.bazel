@@ -1,0 +1,52 @@
+"""rules_otel — hermetic OpenTelemetry Collector install for Bazel test compositions."""
+
+module(
+    name = "rules_otel",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+bazel_dep(name = "rules_kubectl", version = "0.1.0")
+git_override(
+    module_name = "rules_kubectl",
+    remote = "https://github.com/collider-bazel-extensions/rules_kubectl",
+    commit = "bb75b97850b08a18abcdca7af86514561a122b03",  # v0.1.0
+)
+
+# ---- dev-only: smoke composition --------------------------------------------
+bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
+bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
+
+bazel_dep(name = "rules_kind", version = "0.1.2", dev_dependency = True)
+git_override(
+    module_name = "rules_kind",
+    remote = "https://github.com/collider-bazel-extensions/rules_kind",
+    commit = "b9c4670646f8e3772816f56a048e311d5310a763",  # v0.1.2
+)
+
+bazel_dep(name = "rules_helm", version = "0.2.1", dev_dependency = True)
+git_override(
+    module_name = "rules_helm",
+    remote = "https://github.com/collider-bazel-extensions/rules_helm",
+    commit = "48651387d55f0c50f6d059df246ed73767100afb",  # v0.2.1
+)
+
+helm = use_extension("@rules_helm//:extensions.bzl", "helm", dev_dependency = True)
+helm.version(version = "3.20.2")
+use_repo(helm,
+    "helm_linux_amd64",
+    "helm_darwin_amd64",
+    "helm_darwin_arm64",
+)
+register_toolchains(
+    "@helm_linux_amd64//:toolchain",
+    "@helm_darwin_amd64//:toolchain",
+    "@helm_darwin_arm64//:toolchain",
+    dev_dependency = True,
+)
+
+otel_chart = use_extension("//tools:extensions.bzl", "otel_chart", dev_dependency = True)
+otel_chart.version(version = "0.153.0")
+use_repo(otel_chart, "otel_chart_0_153_0")

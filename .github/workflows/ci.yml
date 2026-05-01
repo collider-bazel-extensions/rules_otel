@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  analysis:
+    name: bazel test (ubuntu-latest, analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-analysis
+          repository-cache: true
+
+      - name: bazel build //...
+        run: bazel build //...
+
+      - name: bazel test (analysis only)
+        run: bazel test //... --test_tag_filters=-manual --test_output=errors
+
+      - name: Smoke composition builds
+        run: bazel build //tests:smoke_test
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-testlogs-analysis
+          path: bazel-testlogs/
+          if-no-files-found: ignore
+
+  smoke:
+    # End-to-end: kind + OpenTelemetry Collector (deployment mode,
+    # OTLP receiver, debug exporter at verbosity:detailed). Smoke
+    # POSTs an OTLP/JSON trace at the collector and greps the
+    # collector pod logs for a unique marker attribute.
+    name: smoke (ubuntu-latest, docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-smoke
+          repository-cache: true
+
+      - name: Verify Docker is available
+        run: docker version
+
+      - name: bazel test //tests:smoke_test
+        run: bazel test //tests:smoke_test --test_output=streamed --test_timeout=900
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-testlogs-smoke
+          path: bazel-testlogs/
+          if-no-files-found: ignore
