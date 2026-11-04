@@ -13,5 +13,7 @@ OtelConfigInfo = provider(
     fields = {
         "config":        "File — the collector config (YAML)",
         "feature_gates": "list of string — --feature-gates for the check and the server",
+        "env":           "dict string→string — the check's ${env:...} placeholders " +
+                         "(also used by otel_collector_server's build-time check)",
     },
 )

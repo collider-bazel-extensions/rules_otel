@@ -17,11 +17,11 @@ No host collector needed. The binary is the upstream `otelcol-contrib` release f
 ## Install (Bzlmod)
 
 ```python
-bazel_dep(name = "rules_otel", version = "0.2.0")
+bazel_dep(name = "rules_otel", version = "0.3.0")
 git_override(
     module_name = "rules_otel",
     remote = "https://github.com/collider-bazel-extensions/rules_otel",
-    tag = "v0.2.0",
+    tag = "v0.3.0",
 )
 
 # rules_otel depends on rules_kubectl, which isn't in the BCR either.
@@ -125,11 +125,13 @@ otel_sink_wait traces "GET /healthz" http.response.status_code=200
 
 Other listeners (Prometheus scrape, Zipkin, ...) keep their configured ports, and the launcher logs a note about each. Use port `0` if tests run in parallel.
 
-**The sink** is an OTLP/HTTP backend in the launcher. It accepts:
-- `/v1/traces`, `/v1/metrics` and `/v1/logs`, in protobuf or JSON and optionally gzip-compressed (the `otlphttp` exporter);
-- `/api/v1/push`, Prometheus remote write 1.0 (the `prometheusremotewrite` exporter, with `{sink}/api/v1/push`).
+**The sink** is an OTLP/HTTP backend in the launcher. It accepts, under any path prefix:
+- `…/v1/traces`, `…/v1/metrics` and `…/v1/logs`, in protobuf or JSON and optionally gzip-compressed (the `otlphttp` exporter);
+- `…/api/v1/push`, Prometheus remote write 1.0 (the `prometheusremotewrite` exporter, with `{sink}/api/v1/push`).
 
-It records each span, data point and log record as a JSON line under `$OTEL_SINK_DIR`. `{sink}` in `collector_env` is its URL. gRPC exporters (`otlp`) can't point at it; use `otlphttp`.
+So an exporter configured like production keeps its path: with `endpoint: ${env:MIMIR_URL}/otlp` (or `collector_env = {"MIMIR_URL": "{sink}/otlp"}`), its posts to `/otlp/v1/metrics` are recorded. `requests.log` keeps the full path.
+
+It records each span, data point and log record as a JSON line under `$OTEL_SINK_DIR`. Sum points also keep `monotonic` (`true`/`false`) and `temporality` (`delta`, `cumulative` or `unspecified`); histogram points keep `temporality`. `{sink}` in `collector_env` is its URL. gRPC exporters (`otlp`) can't point at it; use `otlphttp`.
 
 What the test sees:
 
@@ -148,11 +150,14 @@ What the test sees:
 
 | Helper | |
 |---|---|
-| `otel_send_metric NAME [VALUE] [K=V…]` | a gauge point over OTLP/HTTP (`otel_send_sum` for a monotonic sum) |
+| `otel_send_metric NAME [VALUE] [K=V…]` | a gauge point over OTLP/HTTP |
+| `otel_send_sum NAME [VALUE] [K=V…] [--temporality delta] [--monotonic false]` | a sum point (default monotonic, cumulative) |
+| `otel_send_histogram NAME [VALUE] [K=V…] [--temporality delta]` | one histogram observation (default cumulative) |
 | `otel_send_span NAME [K=V…]` | one span |
 | `otel_send_log BODY [K=V…] [--severity WARN]` | one log record |
 | `otel_sink_wait SIGNAL [NAME] [K=V…] [--min N] [--timeout S]` | waits until the sink has received N matching records (default 1). SIGNAL is `traces`, `metrics` or `logs`; NAME is the metric or span name, or a substring of a log body; K=V matches record or resource attributes |
 | `otel_sink_count` / `otel_sink_dump SIGNAL [NAME] [K=V…]` | prints the number of matching records / the records as JSON lines |
+| `--monotonic true\|false`, `--temporality delta\|cumulative\|unspecified` | filters for the three sink helpers, anywhere in their arguments, e.g. `otel_sink_wait metrics app.requests --monotonic true --temporality cumulative` |
 | `otel_sink_down` / `otel_sink_fail CODE` / `otel_sink_up` | the sink stops listening (connection refused, kept-alive connections dropped) / answers every request with CODE / recovers on the same port |
 | `otel_collector_stop` / `otel_collector_start` | stops the collector / starts it again on the same ports and waits until healthy |
 | `otel_self_metric NAME [K=V…]` | the collector's own metric, summed over matching series (0 if none) |
@@ -166,13 +171,20 @@ Waits time out after `$OTEL_WAIT_TIMEOUT` seconds (default 30) and say what they
 | `config` | built-in | an `otel_config` |
 | `collector_env` (test) / `env` (server) | `{}` | environment for the collector; `{sink}` is the sink's URL |
 | `ready_timeout` | `30` | seconds to wait for the health endpoint |
-| `extra_args` | `[]` | extra otelcol-contrib arguments, e.g. `["--set=processors.batch.timeout=50ms"]` |
+| `extra_args` | `[]` | extra otelcol-contrib arguments, e.g. `["--set=processors.batch.timeout=50ms"]`. `--set` and `--feature-gates` are checked with the config at build time |
 | `args`, `env`, `data`, `deps`, `size`, `timeout`, `tags`, … | | as for `sh_test` (`otel_collector_test` only) |
 
 **Readiness.** The collector counts as ready when its health endpoint answers 200, which the health_check extension does once every component has started. That takes about 0.2 s.
 
+**Checked at build time.** `otel_collector_server` (and so `otel_collector_test`) runs `otelcol-contrib validate` on the config it will actually run: the `otel_config` (or the built-in config) plus the `--set` / `--feature-gates` among `extra_args`. The environment is the `otel_config`'s `env` placeholders plus the server's `env`, with `{sink}` replaced by a placeholder URL. A typo in a `--set` fails `bazel build`:
+
+```
+otel_collector_server //otel:collector: otelcol-contrib refused its config with --set=processors.batch.timout=50ms:
+  Error: ... 'batchprocessor.Config' has invalid keys: timout
+```
+
 **Failures.** The test fails, names the cause and shows the collector's log if:
-- the collector refuses its config (an unset `${env:...}` is named);
+- the collector refuses its config at run time, with the real environment and any arguments (an unset `${env:...}` is named, and so are the `--set`s); this is checked before the collector starts;
 - it exits;
 - it isn't healthy within `ready_timeout`.
 

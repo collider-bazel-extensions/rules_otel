@@ -1,10 +1,11 @@
 """The OTLP sink behind otel_collector_server: a small HTTP backend for the
 collector's exporters, standard library only.
 
-It accepts:
-  POST /v1/traces, /v1/metrics, /v1/logs   OTLP/HTTP, protobuf or JSON,
+It accepts, under any path prefix (`{sink}/otlp` → /otlp/v1/metrics):
+  POST .../v1/traces, .../v1/metrics, .../v1/logs
+                                           OTLP/HTTP, protobuf or JSON,
                                            optionally gzip (otlphttp exporter)
-  POST /api/v1/push                        Prometheus remote write 1.0,
+  POST .../api/v1/push                     Prometheus remote write 1.0,
                                            snappy (prometheusremotewrite exporter)
 
 and appends one JSON line per span / data point / log record to
@@ -14,6 +15,8 @@ and appends one JSON line per span / data point / log record to
             "attributes", "resource", "scope", "status"}
   metrics: {"name", "type", "value", "attributes", "resource", "scope",
             "time_unix_nano"}            (histograms / summaries: "count", "sum")
+           sums also "monotonic" (bool) and "temporality" ("delta",
+           "cumulative" or "unspecified"); histograms "temporality"
   logs:    {"body", "severity_text", "severity_number", "attributes",
             "resource", "scope", "trace_id", "span_id"}
 
@@ -161,6 +164,29 @@ def _count_point(buf):  # Histogram / ExponentialHistogram / Summary data points
     return p
 
 
+_TEMPORALITY = {0: "unspecified", 1: "delta", 2: "cumulative"}
+
+
+def _temporality(v):
+    """AggregationTemporality from protobuf (int) or OTLP/JSON (int or
+    "AGGREGATION_TEMPORALITY_DELTA")."""
+    if isinstance(v, str) and not v.isdigit():
+        return v.rsplit("_", 1)[-1].lower() if v.startswith("AGGREGATION_TEMPORALITY_") else "unspecified"
+    return _TEMPORALITY.get(int(v or 0), "unspecified")
+
+
+def _data_meta(kind, fields):
+    """Sum: monotonic + temporality; (exponential) histogram: temporality.
+    Sum{aggregation_temporality=2, is_monotonic=3};
+    Histogram / ExponentialHistogram{aggregation_temporality=2}."""
+    meta = {}
+    if kind in ("sum", "histogram", "exponential_histogram"):
+        meta["temporality"] = _temporality(next((v for n, wt, v in fields if n == 2 and wt == 0), 0))
+    if kind == "sum":
+        meta["monotonic"] = bool(next((v for n, wt, v in fields if n == 3 and wt == 0), 0))
+    return meta
+
+
 _METRIC_DATA = {5: ("gauge", _number_point), 7: ("sum", _number_point),
                 9: ("histogram", _count_point), 10: ("exponential_histogram", _count_point),
                 11: ("summary", _count_point)}
@@ -191,9 +217,12 @@ def _metrics_pb(body):
                 for num, _, v in fields:
                     if num in _METRIC_DATA:
                         kind, decode = _METRIC_DATA[num]
-                        for dn, _, dp in _fields(v):
+                        data = list(_fields(v))
+                        meta = _data_meta(kind, data)
+                        for dn, _, dp in data:
                             if dn == 1:
                                 rec = {"name": name, "type": kind}
+                                rec.update(meta)
                                 rec.update(decode(dp))
                                 rec.update(resource=resource, scope=scope)
                                 out.append(rec)
@@ -331,10 +360,16 @@ def _metrics_json(doc):
                                   ("summary", "summary")):
                     if key not in m:
                         continue
+                    meta = {}
+                    if kind in ("sum", "histogram", "exponential_histogram"):
+                        meta["temporality"] = _temporality(m[key].get("aggregationTemporality", 0))
+                    if kind == "sum":
+                        meta["monotonic"] = bool(m[key].get("isMonotonic", False))
                     for dp in m[key].get("dataPoints", []):
                         rec = {"name": m.get("name", ""), "type": kind,
                                "attributes": _j_attrs(dp.get("attributes")),
                                "time_unix_nano": int(dp.get("timeUnixNano", 0))}
+                        rec.update(meta)
                         if kind in ("gauge", "sum"):
                             if "asInt" in dp:
                                 rec["value"] = int(dp["asInt"])
@@ -461,8 +496,19 @@ _OTLP = {
 }
 
 
+def route(path):
+    """The endpoint a request path ends with, under any prefix (an exporter
+    pointed at `{sink}/otlp` posts to /otlp/v1/metrics). None if none."""
+    for suffix in ("/api/v1/push",) + tuple(_OTLP):
+        if path == suffix or path.endswith(suffix):
+            return suffix
+    return None
+
+
 def decode(path, content_type, encoding, body):
-    """-> (signal, records). Raises ValueError on a body it can't read."""
+    """-> (signal, records). Raises ValueError on a body it can't read,
+    LookupError on a path that isn't an OTLP / remote-write endpoint."""
+    path = route(path) or path
     if encoding == "gzip":
         body = gzip.decompress(body)
     elif encoding == "deflate":

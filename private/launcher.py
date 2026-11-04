@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Runs otelcol-contrib for rules_otel. Two modes:
 
-  launcher.py check --otelcol BIN --marker OUT --config FILE --label L
-                    [--env K=V]... [--feature-gates G]
-      otel_config's validation action: `otelcol-contrib validate` on the
-      config, with only the given environment (so `${env:X}` sees the
-      placeholders from otel_config(env = ...), never the host's values).
-      A config the collector refuses fails with its own message. Writes
-      OUT on success. No network.
+  launcher.py check --otelcol BIN --marker OUT [--config FILE] --label L
+                    [--kind K] [--env K=V]... [--feature-gates G]
+                    [--extra-arg=ARG]...
+      The validation action of otel_config, and of otel_collector_server
+      (--kind): `otelcol-contrib validate` on the config (default: the
+      built-in one) plus any `--set` / `--feature-gates` among the
+      server's extra args, i.e. the config the server will run. Only the
+      given environment is visible (`${env:X}` sees the placeholders,
+      never the host's values); `{sink}` in a value becomes a placeholder
+      URL. A config the collector refuses fails with its own message.
+      Writes OUT on success. No network.
 
   launcher.py serve --otelcol BIN --env-file PATH --state-dir DIR
                     --ready-timeout S --tool PY --testlib SH
@@ -43,6 +47,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -106,21 +111,52 @@ def _gates(args):
     return [f"--feature-gates={args.feature_gates}"] if args.feature_gates else []
 
 
+_SINK_PLACEHOLDER = "http://127.0.0.1:4318"
+
+
+def config_args(extra):
+    """The collector arguments among `extra` that change its config:
+    `--set` and `--feature-gates` (as `--x=v` or `--x v`)."""
+    out, it = [], iter(extra or [])
+    for a in it:
+        name = a.split("=", 1)[0]
+        if name in ("--set", "--feature-gates"):
+            if "=" in a:
+                out.append(a)
+            else:
+                v = next(it, None)
+                if v is not None:
+                    out.append(f"{name}={v}")
+    return out
+
+
 # ---- check ----------------------------------------------------------------------
 
 
 def check(args):
-    env = _parse_env(args.env)
+    env = {k: v.replace("{sink}", _SINK_PLACEHOLDER) for k, v in _parse_env(args.env).items()}
+    env.setdefault("OTEL_SINK_URL", _SINK_PLACEHOLDER)
     # Only the declared variables: a host value must not make the check pass.
     run_env = dict(env)
     run_env.setdefault("HOME", os.environ.get("TMPDIR", "/tmp"))
-    p = subprocess.run(
-        [args.otelcol, "validate", f"--config=file:{args.config}"] + _gates(args),
-        env=run_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    config = args.config
+    if not config:
+        fd, config = tempfile.mkstemp(suffix=".yaml")
+        with os.fdopen(fd, "w") as f:
+            f.write(_DEFAULT_CONFIG)
+    extra = config_args(args.extra_arg)
+    try:
+        p = subprocess.run(
+            [args.otelcol, "validate", f"--config=file:{config}"] + _gates(args) + extra,
+            env=run_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    finally:
+        if not args.config:
+            os.remove(config)
     if p.returncode != 0:
         out = "\n".join("  " + l for l in p.stdout.strip().splitlines())
-        msg = f"otel_config {args.label}: otelcol-contrib refused it:\n{out}"
-        unset = _unset_refs(args.config, env)
+        what = "it" if not extra else "its config with " + " ".join(extra)
+        msg = f"{args.kind} {args.label}: otelcol-contrib refused {what}:\n{out}"
+        unset = _unset_refs(config, env) if args.config else []
         if unset:
             msg += ("\n  (unset at build time: " + ", ".join(f"${{env:{u}}}" for u in unset)
                     + "; give placeholders with otel_config(env = {...}))")
@@ -162,13 +198,17 @@ def _ctype(component_id):
 
 
 def _resolved(args, config, env):
-    """The collector's resolved config (print-config), as a dict."""
+    """The collector's resolved config (print-config, which validates it),
+    with the `--set` / `--feature-gates` extra args applied, as a dict."""
+    extra = config_args(args.extra)
     p = subprocess.run(
         [args.otelcol, "print-config", "--mode=unredacted", "--format=json",
-         f"--config=file:{config}"] + _gates(args),
+         f"--config=file:{config}"] + _gates(args) + extra,
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if p.returncode != 0:
         msg = p.stderr.strip() or p.stdout.strip()
+        if extra:
+            msg = f"(with {' '.join(extra)})\n" + msg
         unset = _unset_refs(config, env)
         if unset:
             msg += ("\n(unset: " + ", ".join(f"${{env:{u}}}" for u in unset)
@@ -520,8 +560,10 @@ def main(argv):
     c = sub.add_parser("check")
     c.add_argument("--otelcol", required=True)
     c.add_argument("--marker", required=True)
-    c.add_argument("--config", required=True)
+    c.add_argument("--config")
     c.add_argument("--label", default="")
+    c.add_argument("--kind", default="otel_config")
+    c.add_argument("--extra-arg", action="append", default=[])
     c.add_argument("--env", action="append")
     c.add_argument("--feature-gates", default="")
 

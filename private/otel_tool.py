@@ -4,12 +4,15 @@ the variables from the server's env file (OTEL_COLLECTOR_OTLP_HTTP,
 OTEL_SINK_DIR, OTEL_CONTROL_URL, ...). Standard library only.
 
   send metric NAME [VALUE] [K=V...]      OTLP/JSON gauge to the collector
-  send sum NAME [VALUE] [K=V...]         monotonic cumulative sum
+  send sum NAME [VALUE] [K=V...] [--temporality delta] [--monotonic false]
+                                         a sum (default monotonic, cumulative)
+  send histogram NAME [VALUE] [K=V...] [--temporality delta]
+                                         one observation (default cumulative)
   send span NAME [K=V...]
   send log BODY [K=V...] [--severity S]
-  sink count SIGNAL [NAME] [K=V...]      records the sink received
-  sink wait SIGNAL [NAME] [K=V...] [--min N] [--timeout S]
-  sink dump SIGNAL [NAME] [K=V...]       matching records, one JSON per line
+  sink count SIGNAL [NAME] [K=V...] [FILTERS]   records the sink received
+  sink wait SIGNAL [NAME] [K=V...] [FILTERS] [--min N] [--timeout S]
+  sink dump SIGNAL [NAME] [K=V...] [FILTERS]    matching records, one JSON per line
   sink mode ok|down|<HTTP status>
   collector stop|start
   selfmetric NAME [K=V...] [--min X] [--timeout S]
@@ -20,7 +23,9 @@ OTEL_SINK_DIR, OTEL_CONTROL_URL, ...). Standard library only.
 SIGNAL is traces, metrics or logs. NAME is the metric or span name (exact)
 or, for logs, a substring of the body; it can't contain `=`, since any
 argument with `=` is a K=V attribute. K=V matches record attributes or
-resource attributes. Timeouts default to $OTEL_WAIT_TIMEOUT or 30 s.
+resource attributes. FILTERS for metrics: --monotonic true|false (sums)
+and --temporality delta|cumulative|unspecified (sums and histograms).
+Timeouts default to $OTEL_WAIT_TIMEOUT or 30 s.
 """
 
 import argparse
@@ -87,7 +92,7 @@ _SEVERITY = {"TRACE": 1, "DEBUG": 5, "INFO": 9, "WARN": 13, "ERROR": 17, "FATAL"
 def send(args):
     base = need("OTEL_COLLECTOR_OTLP_HTTP")
     plain, attrs = split_rest(args.rest)
-    metric = args.what in ("metric", "sum")
+    metric = args.what in ("metric", "sum", "histogram")
     name = one_name(plain, "send " + args.what, 2 if metric else 1)
     if name is None:
         die(f"send {args.what}: missing the name")
@@ -105,9 +110,18 @@ def send(args):
             point["asDouble"] = num
         if args.what == "metric":
             data = {"gauge": {"dataPoints": [point]}}
+        elif args.what == "histogram":
+            hist = {"timeUnixNano": str(now), "startTimeUnixNano": str(now - 10**9),
+                    "attributes": _kv(attrs), "count": "1", "sum": num,
+                    "explicitBounds": [], "bucketCounts": ["1"]}
+            data = {"histogram": {"aggregationTemporality":
+                                  _TEMPORALITY_CODES[args.temporality or "cumulative"],
+                                  "dataPoints": [hist]}}
         else:
             point["startTimeUnixNano"] = str(now - 10**9)
-            data = {"sum": {"aggregationTemporality": 2, "isMonotonic": True,
+            temporality = args.temporality or "cumulative"
+            data = {"sum": {"aggregationTemporality": _TEMPORALITY_CODES[temporality],
+                            "isMonotonic": True if args.monotonic is None else args.monotonic,
                             "dataPoints": [point]}}
         doc = {"resourceMetrics": [{"resource": _RESOURCE, "scopeMetrics": [
             {"scope": {"name": "rules_otel"}, "metrics": [dict(name=name, **data)]}]}]}
@@ -154,7 +168,15 @@ def records(signal):
     return out
 
 
-def matches(signal, rec, name, attrs):
+_TEMPORALITY_CODES = {"unspecified": 0, "delta": 1, "cumulative": 2}
+
+
+def matches(signal, rec, name, attrs, args=None):
+    if args is not None:
+        if args.monotonic is not None and rec.get("monotonic") is not args.monotonic:
+            return False
+        if args.temporality is not None and rec.get("temporality") != args.temporality:
+            return False
     if name is not None:
         if signal == "logs":
             if name not in str(rec.get("body")):
@@ -184,7 +206,7 @@ def sink(args):
     signal = args.rest[0]
     plain, attrs = split_rest(args.rest[1:])
     name = one_name(plain, "sink " + args.what)
-    found = lambda: [r for r in records(signal) if matches(signal, r, name, attrs)]  # noqa: E731
+    found = lambda: [r for r in records(signal) if matches(signal, r, name, attrs, args)]  # noqa: E731
     if args.what == "count":
         print(len(found()))
     elif args.what == "dump":
@@ -196,7 +218,10 @@ def sink(args):
         while len(found()) < want:
             if time.monotonic() > deadline:
                 desc = " ".join([signal] + ([name] if name else [])
-                                + [f"{k}={v}" for k, v in attrs.items()])
+                                + [f"{k}={v}" for k, v in attrs.items()]
+                                + ([f"--monotonic {str(args.monotonic).lower()}"]
+                                   if args.monotonic is not None else [])
+                                + ([f"--temporality {args.temporality}"] if args.temporality else []))
                 req = os.path.join(need("OTEL_SINK_DIR"), "requests.log")
                 try:
                     last = "".join(open(req).readlines()[-10:]) or "(none)\n"
@@ -283,13 +308,29 @@ def logwait(args):
         time.sleep(0.1)
 
 
-_OPTIONS = {"--severity": str, "--min": float, "--timeout": float}
+def _bool(v):
+    if v.lower() in ("true", "1", "yes"):
+        return True
+    if v.lower() in ("false", "0", "no"):
+        return False
+    raise ValueError(v)
+
+
+def _temporality(v):
+    if v not in _TEMPORALITY_CODES:
+        raise ValueError(v)
+    return v
+
+
+_OPTIONS = {"--severity": str, "--min": float, "--timeout": float,
+            "--monotonic": _bool, "--temporality": _temporality}
 
 
 def parse(argv):
     """-> Namespace(cmd, what, rest, severity, min, timeout). Options may
     come anywhere (argparse can't intermix them with subcommands)."""
-    opts = {"severity": "INFO", "min": None, "timeout": None}
+    opts = {"severity": "INFO", "min": None, "timeout": None,
+            "monotonic": None, "temporality": None}
     rest, it = [], iter(argv)
     for a in it:
         name, sep, val = a.partition("=")
@@ -301,10 +342,12 @@ def parse(argv):
             try:
                 opts[name[2:]] = _OPTIONS[name](val)
             except ValueError:
-                die(f"{name} {val!r}: not a number")
+                want = {"--monotonic": "true or false",
+                        "--temporality": "delta, cumulative or unspecified"}.get(name, "a number")
+                die(f"{name} {val!r}: expected {want}")
         else:
             rest.append(a)
-    commands = {"send": ("metric", "sum", "span", "log"),
+    commands = {"send": ("metric", "sum", "histogram", "span", "log"),
                 "sink": ("count", "wait", "dump", "mode"),
                 "collector": ("stop", "start"),
                 "selfmetric": None, "logwait": None}

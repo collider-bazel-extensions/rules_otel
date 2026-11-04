@@ -36,6 +36,13 @@ jobs:
           fi
           grep -q 'references exporter "otlphttp/mimr" which is not configured' build.log
 
+      - name: A bad --set in extra_args fails the build
+        run: |
+          if bazel build //tests:bad_set_server 2> build.log; then
+            echo "FAIL: //tests:bad_set_server built" >&2; exit 1
+          fi
+          grep -q "refused its config with --set=processors.batch.timeout=banana" build.log
+
       - name: Committed manifest matches the render
         run: |
           bazel run //tools:render_writeback_0_153_0

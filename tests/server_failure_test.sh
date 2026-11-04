@@ -2,15 +2,18 @@
 # A collector that refuses its config, exits, or isn't healthy in time
 # makes the server exit non-zero, name the cause, print the log and write
 # no env file; otel_collector_test fails before running the test body.
+# (A bad --set in extra_args fails `bazel build`; CI checks that. Here bad
+# arguments are passed at run time, which the build can't see.)
 #
-# Argv: <unset_env server> <bad_set server> <slow server> <trampoline>
+# Argv: <unset_env server> <runtime server> <slow server> <trampoline>
 #       <failing test server> <failing test inner>
 set -euo pipefail
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-run() {
+run() {  # run <name> <path> [collector args...]
   local name="$1" path="$TEST_SRCDIR/_main/$2" rc=0
-  out=$(timeout 120 "$path" 2>&1) || rc=$?
+  shift 2
+  out=$(timeout 120 "$path" "$@" 2>&1) || rc=$?
   [[ "$rc" != 0 ]] || fail "$name: exited 0. Output: $out"
   [[ "$rc" != 124 ]] || fail "$name: hung. Output: $out"
   [[ ! -f "$TEST_TMPDIR/$name.env" ]] || fail "$name: env file written"
@@ -22,9 +25,16 @@ grep -q "at least one endpoint must be specified" <<<"$out" || fail "unset_env: 
 grep -qF 'unset: ${env:MIMIR_URL}' <<<"$out" || fail "unset_env: variable not named: $out"
 echo "ok: config refused (unset variable named)"
 
-run bad_set_server "$2"
-grep -q "otelcol-contrib exited with status 1 before it was healthy" <<<"$out" || fail "bad_set: cause: $out"
-grep -q "timeout" <<<"$out" || fail "bad_set: collector log not shown: $out"
+run runtime_server "$2" --set=processors.batch.timeout=banana
+grep -q "the collector refused its config" <<<"$out" || fail "bad --set: cause: $out"
+grep -qF "(with --set=processors.batch.timeout=banana)" <<<"$out" || fail "bad --set: args not named: $out"
+grep -q "timeout" <<<"$out" || fail "bad --set: collector message not shown: $out"
+grep -q "Everything is ready\|starting " <<<"$out" && fail "bad --set: the collector was started"
+echo "ok: a bad --set is refused before the collector starts, naming it"
+
+run runtime_server "$2" --no-such-flag
+grep -q "otelcol-contrib exited with status 1 before it was healthy" <<<"$out" || fail "bad flag: cause: $out"
+grep -q "unknown flag: --no-such-flag" <<<"$out" || fail "bad flag: collector log not shown: $out"
 echo "ok: collector that exits at start"
 
 run slow_server "$3"
