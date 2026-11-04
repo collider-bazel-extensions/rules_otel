@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# otel_collector_server wrapper: resolves runfiles, execs the launcher.
+# Substitution markers use __KEY__ syntax to avoid colliding with bash.
+set -euo pipefail
+
+if [[ -z "${RUNFILES_DIR:-}" ]]; then
+  if [[ -n "${TEST_SRCDIR:-}" ]]; then RUNFILES_DIR="$TEST_SRCDIR"
+  elif [[ -d "${0}.runfiles" ]]; then RUNFILES_DIR="${0}.runfiles"
+  fi
+  : "${RUNFILES_DIR:?otel_collector_server: no runfiles found; run it with bazel run / bazel test}"
+  export RUNFILES_DIR
+fi
+
+resolve() {
+  local p="$1"
+  for c in "${RUNFILES_DIR}/_main/${p}" "${RUNFILES_DIR}/${p}" "${RUNFILES_DIR}/${p#../}"; do
+    [[ -e "$c" ]] && { printf '%s\n' "$c"; return; }
+  done
+  echo "otel_collector_server: not in runfiles: ${p}" >&2
+  exit 1
+}
+
+name='__NAME__'
+tmp="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
+
+# Resolve into variables first: a failing $(resolve) inside an argument
+# list would not stop the script under `set -e`.
+launcher="$(resolve '__LAUNCHER__')"
+resolve '__SINK__' >/dev/null   # imported by the launcher from its own dir
+tool="$(resolve '__TOOL__')"
+testlib="$(resolve '__TESTLIB__')"
+otelcol="$(resolve '__OTELCOL__')"
+opts=()
+__CONFIG__
+
+exec python3 "$launcher" serve \
+  --otelcol "$otelcol" \
+  --env-file "$tmp/$name.env" \
+  --state-dir "$tmp/otel-$name" \
+  --ready-timeout '__READY_TIMEOUT__' \
+  --tool "$tool" \
+  --testlib "$testlib" \
+  ${opts[@]+"${opts[@]}"} __OPTS__ \
+  -- __EXTRA_ARGS__ "$@"

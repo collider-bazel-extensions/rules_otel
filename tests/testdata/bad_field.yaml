@@ -1,0 +1,15 @@
+receivers:
+  otlp:
+    protocols:
+      grpc: {}
+processors:
+  batch:
+    timeoutt: 1s
+exporters:
+  debug: {}
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

@@ -1,0 +1,12 @@
+receivers:
+  otlp:
+    protocols:
+      grpc: {}
+exporters:
+  otlphttp/mimir:
+    endpoint: http://mimir:9009/otlp
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [otlphttp/mimr]
