@@ -33,6 +33,17 @@ git_override(
 )
 ```
 
+To pin by archive and integrity instead of a git tag, replace the first `git_override` with:
+
+```python
+archive_override(
+    module_name = "rules_otel",
+    urls = ["https://github.com/collider-bazel-extensions/rules_otel/archive/refs/tags/v0.2.0.tar.gz"],
+    strip_prefix = "rules_otel-0.2.0",
+    integrity = "sha256-OwAKy2C4NWFnOIw8cxKmjsqNCGXnYQ1fT/CLd7UXy1I=",
+)
+```
+
 That's all: rules_otel registers its toolchain, and fetches the binary only for the platform a build needs. To pick another pinned version, name it in your own `MODULE.bazel` (only the root module's tag counts):
 
 ```python
