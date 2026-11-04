@@ -1,12 +1,50 @@
-"""rules_otel — hermetic OpenTelemetry Collector install for Bazel test compositions."""
+"""rules_otel — the OpenTelemetry Collector for Bazel.
+
+Three families in one repo:
+
+  Config (build time):
+    otel_config                 — `otelcol-contrib validate` as a
+                                  validation action on every build
+
+  Hermetic collector (test time):
+    otel_collector_server       — otelcol-contrib on free ports plus an
+                                  OTLP sink; writes $TEST_TMPDIR/<name>.env
+    otel_collector_health_check — pairs with otel_collector_server
+    otel_collector_test         — sh_test macro: auto-launched collector
+
+  Cluster install (kind / production-shaped):
+    otel_install / otel_health_check — the pinned opentelemetry-collector
+                                  Helm chart, pre-rendered
+
+Pinned: otelcol-contrib 0.151.0 (the release binaries, and the image the
+chart deploys), opentelemetry-collector chart 0.153.0.
+"""
 
 module(
     name = "rules_otel",
-    version = "0.1.0",
+    version = "0.2.0",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "platforms", version = "1.0.0")
+
+# rules_shell is part of the public surface — otel_collector_test is an
+# sh_test macro. Bazel 8+ removed `native.sh_test`.
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# Public binary toolchain. The `otel` extension creates
+# otelcol_contrib_<platform> repos at the root module's otel.version(), or
+# at this module's when the root names none.
+otel = use_extension("//:extensions.bzl", "otel")
+otel.version(version = "0.151.0")
+use_repo(
+    otel,
+    "otelcol_contrib_darwin_amd64",
+    "otelcol_contrib_darwin_arm64",
+    "otelcol_contrib_linux_amd64",
+    "otelcol_contrib_linux_arm64",
+)
+register_toolchains("@rules_otel//toolchain:all")
 
 bazel_dep(name = "rules_kubectl", version = "0.1.0")
 git_override(
@@ -17,7 +55,6 @@ git_override(
 
 # ---- dev-only: smoke composition --------------------------------------------
 bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
-bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
 
 bazel_dep(name = "rules_kind", version = "0.3.0", dev_dependency = True)
 git_override(

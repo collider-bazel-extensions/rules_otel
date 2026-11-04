@@ -1,26 +1,235 @@
 """Tests for rules_otel.
 
-- Analysis test verifies the macro instantiates cleanly.
-- Smoke composition: kind cluster + OpenTelemetry Collector
-  (deployment mode, OTLP receiver, debug exporter at verbosity:
-  detailed). Smoke `kubectl run`s a curl pod, POSTs an OTLP/JSON
-  trace at `<svc>:4318/v1/traces` with a unique marker attribute,
-  then greps the collector pod's logs for that marker — proves the
-  receiver → batch processor → debug exporter pipeline end-to-end.
+In-tree (no container runtime): the config check, the hermetic collector
+(otel_collector_test / otel_collector_server, the sink, restart, failure
+and cleanup behaviour, rules_itest), pins, and analysis tests.
+
+Smoke composition (manual; needs Docker or podman): kind cluster +
+otel_install (deployment mode, OTLP receiver, debug exporter at
+verbosity: detailed). The smoke `kubectl run`s a curl pod, POSTs an
+OTLP/JSON trace at `<svc>:4318/v1/traces` with a unique marker
+attribute, then greps the collector pod's logs for that marker.
 """
 
 load("@rules_itest//:itest.bzl", "itest_service", "service_test")
 load("@rules_kind//:defs.bzl", "kind_cluster", "kind_health_check")
-load("@rules_otel//:defs.bzl", "otel_health_check", "otel_install")
+load(
+    "@rules_otel//:defs.bzl",
+    "otel_collector_health_check",
+    "otel_collector_server",
+    "otel_collector_test",
+    "otel_health_check",
+    "otel_install",
+)
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load(":analysis_tests.bzl", "otel_install_test_suite")
+load(":analysis_tests.bzl", "analysis_test_suite")
 
-# ---- analysis ---------------------------------------------------------------
+# ---- config -----------------------------------------------------------------
 
-otel_install_test_suite(name = "otel_install_analysis")
+# The validation action, run directly on good and bad configs.
+sh_test(
+    name = "config_check_test",
+    srcs = ["config_check_test.sh"],
+    args = [
+        "$(rootpath //private:launcher.py)",
+        "$(rootpath //toolchain:current)",
+        "$(rootpath //tests/testdata:boundary.yaml)",
+    ],
+    data = [
+        "//private:launcher.py",
+        "//tests/testdata:bad_component.yaml",
+        "//tests/testdata:bad_field.yaml",
+        "//tests/testdata:boundary.yaml",
+        "//tests/testdata:undefined_ref.yaml",
+        "//toolchain:current",
+    ],
+)
 
-# ---- smoke composition ------------------------------------------------------
+# ---- hermetic collector ---------------------------------------------------------
+
+otel_collector_test(
+    name = "api_test",
+    srcs = ["api_test.sh"],
+    args = [
+        "one",
+        "'two words'",
+    ],
+)
+
+otel_collector_test(
+    name = "boundary_test",
+    srcs = ["boundary_test.sh"],
+    collector_env = {"MIMIR_URL": "{sink}"},
+    config = "//tests/testdata:boundary",
+)
+
+otel_collector_test(
+    name = "json_test",
+    srcs = ["json_test.sh"],
+    collector_env = {"BACKEND": "{sink}"},
+    config = "//tests/testdata:json",
+)
+
+otel_collector_test(
+    name = "restart_test",
+    srcs = ["restart_test.sh"],
+)
+
+otel_collector_server(
+    name = "test_server",
+    extra_args = ["--set=processors.batch.timeout=50ms"],
+    tags = ["manual"],
+)
+
+otel_collector_health_check(
+    name = "test_server_health",
+    server = ":test_server",
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "server_test",
+    srcs = ["server_test.sh"],
+    args = ["$(rootpath :test_server)"],
+    data = [":test_server"],
+)
+
+sh_test(
+    name = "health_check_test",
+    srcs = ["health_check_test.sh"],
+    args = ["$(rootpath :test_server_health)"],
+    data = [":test_server_health"],
+)
+
+otel_collector_server(
+    name = "unset_env_server",
+    config = "//tests/testdata:boundary",
+    tags = ["manual"],
+)
+
+otel_collector_server(
+    name = "bad_set_server",
+    extra_args = ["--set=processors.batch.timeout=banana"],
+    tags = ["manual"],
+)
+
+otel_collector_server(
+    name = "slow_server",
+    ready_timeout = "0.001",
+    tags = ["manual"],
+)
+
+otel_collector_test(
+    name = "failing_otel_test",
+    srcs = ["never_runs.sh"],
+    extra_args = ["--set=processors.batch.timeout=banana"],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "server_failure_test",
+    srcs = ["server_failure_test.sh"],
+    args = [
+        "$(rootpath :unset_env_server)",
+        "$(rootpath :bad_set_server)",
+        "$(rootpath :slow_server)",
+        # failing_otel_test's trampoline, run with the arguments its
+        # sh_test would pass (a test target's args don't apply as data).
+        "$(rootpath //private:otel_test_trampoline.sh)",
+        "$(rootpath :failing_otel_test_otelcol)",
+        "$(rootpath :failing_otel_test_inner)",
+    ],
+    data = [
+        ":bad_set_server",
+        ":failing_otel_test_inner",
+        ":failing_otel_test_otelcol",
+        ":slow_server",
+        ":unset_env_server",
+        "//private:otel_test_trampoline.sh",
+    ],
+)
+
+otel_collector_test(
+    name = "record_port",
+    srcs = ["record_port.sh"],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "server_cleanup_test",
+    srcs = ["server_cleanup_test.sh"],
+    args = [
+        "$(rootpath //private:otel_test_trampoline.sh)",
+        "$(rootpath :record_port_otelcol)",
+        "$(rootpath :record_port_inner)",
+    ],
+    data = [
+        ":record_port_inner",
+        ":record_port_otelcol",
+        "//private:otel_test_trampoline.sh",
+    ],
+)
+
+# otel_collector_server as a rules_itest service.
+otel_collector_server(
+    name = "itest_server",
+    tags = ["manual"],
+)
+
+otel_collector_health_check(
+    name = "itest_server_health",
+    server = ":itest_server",
+    tags = ["manual"],
+)
+
+itest_service(
+    name = "otel_svc_hermetic",
+    exe = ":itest_server",
+    health_check = ":itest_server_health",
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "itest_test_bin",
+    srcs = ["itest_test.sh"],
+    tags = ["manual"],
+)
+
+service_test(
+    name = "itest_test",
+    services = [":otel_svc_hermetic"],
+    test = ":itest_test_bin",
+)
+
+# ---- pins -------------------------------------------------------------------------
+
+sh_test(
+    name = "checksums_test",
+    srcs = ["checksums_test.sh"],
+    data = ["//private:versions.bzl"],
+)
+
+sh_test(
+    name = "version_test",
+    srcs = ["version_test.sh"],
+    args = [
+        "$(rootpath //private:versions.bzl)",
+        "$(rootpath //:MODULE.bazel)",
+        "$(rootpath //private/manifests:otel.yaml)",
+        "$(rootpath //toolchain:current)",
+    ],
+    data = [
+        "//:MODULE.bazel",
+        "//private:versions.bzl",
+        "//private/manifests:otel.yaml",
+        "//toolchain:current",
+    ],
+)
+
+analysis_test_suite(name = "analysis_tests")
+
+# ---- smoke composition (kind) ----------------------------------------------------
 
 kind_cluster(name = "cluster", k8s_version = "1.35")
 kind_health_check(name = "cluster_health", cluster = ":cluster")

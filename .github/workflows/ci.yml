@@ -8,31 +8,49 @@ on:
   workflow_dispatch:
 
 jobs:
-  analysis:
-    name: bazel test (ubuntu-latest, analysis)
+  test:
+    # Everything that needs no container runtime: the config check, the
+    # hermetic collector (otel_collector_test / otel_collector_server, the
+    # sink, restart, failure and cleanup), pins, analysis tests, and the
+    # committed chart render.
+    name: bazel test (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-analysis
+          disk-cache: ${{ github.workflow }}-test
           repository-cache: true
 
       - name: bazel build //...
         run: bazel build //...
 
-      - name: bazel test (analysis only)
-        run: bazel test //... --test_tag_filters=-manual --test_output=errors
+      - name: bazel test //tests/...
+        run: bazel test //tests/... --test_output=errors
 
-      - name: Smoke composition builds
-        run: bazel build //tests:smoke_test
+      - name: A bad config fails the build
+        run: |
+          if bazel build //tests/testdata:bad_ref 2> build.log; then
+            echo "FAIL: //tests/testdata:bad_ref built" >&2; exit 1
+          fi
+          grep -q 'references exporter "otlphttp/mimr" which is not configured' build.log
+
+      - name: Committed manifest matches the render
+        run: |
+          bazel run //tools:render_writeback_0_153_0
+          git diff --exit-code private/manifests/otel.yaml
+
+      - name: No collectors left behind
+        if: always()
+        run: |
+          if pgrep -x otelcol-contrib; then echo "FAIL: otelcol-contrib processes left running" >&2; exit 1; fi
 
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: bazel-testlogs-analysis
+          name: bazel-testlogs-test
           path: bazel-testlogs/
           if-no-files-found: ignore
 

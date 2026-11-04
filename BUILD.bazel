@@ -12,6 +12,10 @@ bzl_library(
     name = "defs",
     srcs = ["defs.bzl"],
     deps = [
-        "@rules_kubectl//:defs",
+        "//private:config",
+        "//private:install",
+        "//private:providers",
+        "//private:server",
+        "//private:test",
     ],
 )

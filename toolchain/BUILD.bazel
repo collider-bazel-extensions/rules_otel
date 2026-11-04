@@ -1,0 +1,53 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load(":toolchain.bzl", "current_otel_toolchain")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["toolchain.bzl"])
+
+toolchain_type(name = "otel")
+
+# The resolved otelcol-contrib for the target platform, usable as `data`.
+current_otel_toolchain(name = "current")
+
+# Per-platform toolchains. Each `otelcol_contrib_<plat>` repo (created by
+# the module extension) holds one platform's binary and its toolchain
+# implementation, at whichever version the extension resolved.
+
+toolchain(
+    name                   = "otelcol_linux_amd64",
+    toolchain_type         = ":otel",
+    exec_compatible_with   = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    toolchain              = "@otelcol_contrib_linux_amd64//:toolchain_impl",
+)
+
+toolchain(
+    name                   = "otelcol_linux_arm64",
+    toolchain_type         = ":otel",
+    exec_compatible_with   = ["@platforms//os:linux", "@platforms//cpu:arm64"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:arm64"],
+    toolchain              = "@otelcol_contrib_linux_arm64//:toolchain_impl",
+)
+
+toolchain(
+    name                   = "otelcol_darwin_amd64",
+    toolchain_type         = ":otel",
+    exec_compatible_with   = ["@platforms//os:osx", "@platforms//cpu:x86_64"],
+    target_compatible_with = ["@platforms//os:osx", "@platforms//cpu:x86_64"],
+    toolchain              = "@otelcol_contrib_darwin_amd64//:toolchain_impl",
+)
+
+toolchain(
+    name                   = "otelcol_darwin_arm64",
+    toolchain_type         = ":otel",
+    exec_compatible_with   = ["@platforms//os:osx", "@platforms//cpu:arm64"],
+    target_compatible_with = ["@platforms//os:osx", "@platforms//cpu:arm64"],
+    toolchain              = "@otelcol_contrib_darwin_arm64//:toolchain_impl",
+)
+
+bzl_library(
+    name = "toolchain",
+    srcs = ["toolchain.bzl"],
+    deps = ["//private:providers"],
+)

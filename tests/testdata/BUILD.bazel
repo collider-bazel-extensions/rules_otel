@@ -1,0 +1,26 @@
+load("@rules_otel//:defs.bzl", "otel_config")
+
+package(default_visibility = ["//tests:__subpackages__"])
+
+exports_files(glob(["*.yaml"]))
+
+# Checked on every build, with placeholders for the env-expanded values.
+otel_config(
+    name = "boundary",
+    src = "boundary.yaml",
+    env = {"MIMIR_URL": "http://mimir.example:9009/otlp"},
+)
+
+otel_config(
+    name = "json",
+    src = "json.yaml",
+    env = {"BACKEND": "http://backend.example:4318"},
+)
+
+# For the by-hand check that a bad config fails `bazel build`
+# (`bazel build //tests/testdata:bad_ref`); manual, so `//...` skips it.
+otel_config(
+    name = "bad_ref",
+    src = "undefined_ref.yaml",
+    tags = ["manual"],
+)

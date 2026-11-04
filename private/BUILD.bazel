@@ -1,0 +1,60 @@
+"""Private build files for rules_otel. Public surface lives in
+//:defs.bzl, which re-exports from here."""
+
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "health_check.sh.tmpl",
+    "launcher.py",
+    "otel_test_trampoline.sh",
+    "otel_tool.py",
+    "otlp_sink.py",
+    "server.sh.tmpl",
+    "testlib.sh",
+    "versions.bzl",
+])
+
+bzl_library(
+    name = "providers",
+    srcs = ["providers.bzl"],
+)
+
+bzl_library(
+    name = "config",
+    srcs = ["config.bzl"],
+    deps = [":providers"],
+)
+
+bzl_library(
+    name = "server",
+    srcs = ["server.bzl"],
+    deps = [
+        ":config",
+        ":providers",
+    ],
+)
+
+bzl_library(
+    name = "test",
+    srcs = ["test.bzl"],
+    deps = [":server"],
+)
+
+bzl_library(
+    name = "install",
+    srcs = ["install.bzl"],
+    deps = ["@rules_kubectl//:defs"],
+)
+
+bzl_library(
+    name = "versions",
+    srcs = ["versions.bzl"],
+)
+
+bzl_library(
+    name = "repositories",
+    srcs = ["repositories.bzl"],
+    deps = [":versions"],
+)

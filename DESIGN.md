@@ -1,10 +1,14 @@
 # rules_otel — design decisions
 
-Hermetic [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
-install for Bazel test compositions. Same shape as `rules_loki` /
-`rules_grafana` / `rules_harbor` / `rules_external_secrets` /
-`rules_kafka` / `rules_tempo` — pure glue over `rules_kubectl` +
-`rules_helm`.
+Bazel rules for the [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/).
+
+- **v0.1: the cluster install.** It has the same shape as `rules_loki`, `rules_grafana`, `rules_harbor`, `rules_external_secrets`, `rules_kafka` and `rules_tempo`: pure glue over `rules_kubectl` and `rules_helm`. The decisions table below is from then.
+- **v0.2: build-time checks and a hermetic collector** (issue #4). It follows rules_vault, rules_valkey and rules_prometheus:
+  - a binary toolchain;
+  - `otel_config` checked by a validation action;
+  - a launcher-based `otel_collector_server` with a health check and an `sh_test` macro.
+
+  See [Hermetic collector (v0.2)](#hermetic-collector-v02).
 
 ## Decided
 
@@ -17,12 +21,12 @@ install for Bazel test compositions. Same shape as `rules_loki` /
 | 5 | Plain collector vs. operator | **Plain `opentelemetry-collector` chart** at v0.1. The OpenTelemetry Operator (separate `opentelemetry-operator` chart) installs an operator + ships `OpenTelemetryCollector` / `Instrumentation` CRDs — different family (operator + CRD-driven smoke, comparable to rules_cloudnativepg's shape). The plain collector is one Deployment + Service + ConfigMap, strictly simpler for v0.1. See "Plain collector vs. operator" below. | Smaller smoke surface |
 | 6 | Single-version | One pinned chart (`0.153.0`, collector app `0.151.0`). | Pragmatic |
 | 7 | Render mode | **Smoke fixture.** `mode: deployment` (single-replica gateway), OTLP receiver only (gRPC + HTTP), `debug` exporter at `verbosity: detailed`, traces / metrics / logs pipelines all using OTLP → batch → debug. README warns the values are not a production starting point. | Smoke pragmatic |
-| 8 | Public surface | `otel_install`, `otel_health_check`. **No `otel_collector` rule** — collector configuration is dense YAML (receivers/processors/exporters/pipelines + service.telemetry); v0.1 documents the YAML pattern + ships `examples/`. | Smaller surface |
+| 8 | Public surface | v0.1: `otel_install`, `otel_health_check`; collector configuration is dense YAML, so v0.1 documented the YAML pattern and shipped `examples/`. **v0.2 adds `otel_config`, `otel_collector_server`, `otel_collector_health_check` and `otel_collector_test`** (#4). They take the YAML as written rather than modelling it in Starlark. | Smaller surface |
 | 9 | Namespace | `otel` (default, idempotent create). | Convention |
 | 10 | Wait shape | One Deployment (`otel-opentelemetry-collector`). The chart's release name is pinned to `otel` at maintainer-render time, so the Deployment name is the chart's `<release>-opentelemetry-collector` template. No CRDs (operator chart ships them; this rule set wraps the plain chart). | Plain-collector specific |
 | 11 | Smoke client | **`kubectl run` a curl pod.** Same approach as rules_tempo — OTLP/JSON push from a curl pod is the lightest possible client. | Pragmatic |
 | 12 | Smoke assertion | Generate a unique marker string. POST an OTLP/JSON trace at `<svc>:4318/v1/traces` with the marker as a span attribute. Poll the collector pod's logs (`kubectl logs deploy/...`) until the marker appears — the `debug` exporter at verbosity `detailed` writes every received record's attributes to stdout. Proves OTLP receiver + batch processor + debug exporter all wired correctly — **not** "collector pod is up." | Per the family's "exercise the functionality" rule |
-| 13 | Cross-rule deps | `rules_kubectl` public dep. `rules_helm` + `rules_kind` + `rules_itest` + `rules_shell` dev-only. | rules_loki precedent |
+| 13 | Cross-rule deps | `rules_kubectl` and (since v0.2, for the `sh_test` macro) `rules_shell` are public deps. `rules_helm`, `rules_kind` and `rules_itest` are dev-only. | rules_loki precedent |
 | 14 | Naming | snake_case rules/macros, `MixedCaseInfo` providers (none in v0.1), `UPPER_SNAKE` constants. | All siblings |
 | 15 | Update workflow | `bash tools/render_otel.sh <chart-version>` → thin shim. | rules_loki precedent |
 
@@ -101,7 +105,9 @@ v0.1 picks contrib so consumers can pivot exporters / receivers
 without re-pinning the image. The size delta (~150MB) isn't large
 enough to matter for a smoke fixture.
 
-## v0.1.0 status
+## Status
+
+v0.2.0 adds the toolchain, `otel_config`, the hermetic collector with its sink and control endpoint, and their tests (see CLAUDE.md for the inventory). v0.1.0:
 
 | Area | State |
 |---|---|
@@ -113,6 +119,67 @@ enough to matter for a smoke fixture.
 | Analysis test | done |
 | Smoke (kind + collector + OTLP/JSON push + log-grep round-trip) | done |
 | `examples/` (debug-exporter, real backend export sketch, OTLP curl) | done |
+
+## Hermetic collector (v0.2)
+
+### Binary and toolchain
+
+- **The binary:** the upstream `otelcol-contrib` release tarballs, one static Go binary per platform, for linux and darwin on amd64 and arm64. They're pinned in `private/versions.bzl` with the SHA-256s from the release's published checksums file. `tools/update_checksums.sh` downloads every tarball to cross-check them.
+- **Same version as the install:** contrib, at the version of the image the chart deploys. `//tests:version_test` fails if `DEFAULT_VERSION`, `otel.version()` in `MODULE.bazel`, the manifest's image tag and the binary's `--version` disagree.
+- **Repo names carry no version:** `otelcol_contrib_<platform>`. Each repo declares its own `otel_toolchain` implementation, so `//toolchain:BUILD` never changes with the version.
+- **Which version:** the root module's `otel.version()` tag wins; otherwise rules_otel's own tag applies. So a consumer that only uses `otel_install` (every v0.1 consumer) declares nothing and fetches nothing: toolchain resolution only loads a repo when a target needs the toolchain. This differs from rules_valkey and rules_vault, whose versioned repo names make consumers `use_repo` four repos.
+- **Core `otelcol` is not offered.** The issue called it optional, contrib includes every core component, and the image is contrib.
+
+### `otel_config`
+
+- **The check:** the validation action runs `otelcol-contrib validate`. It checks the config against the real component factories (unknown types, unknown fields, the pipeline graph) without starting anything, in about 0.1 s.
+- **A clean environment:** the collector runs with only `otel_config(env = ...)` (plus `HOME`). A `${env:X}` that passes on a developer's machine because their shell exports X would otherwise fail in CI, or the reverse. When the check fails, the launcher names the unset `${env:X}` references that have no default.
+
+### `otel_collector_server`: moving the listeners
+
+A production config listens on fixed ports (`:4317`, `:4318`, `:13133`, `:8888`), and parallel tests can't share them.
+
+- **Finding the listeners.** The launcher can't parse YAML with the standard library, and the config may use `${env:...}`, so it asks the collector: `print-config --mode=unredacted --format=json` gives the resolved config. From it the launcher finds:
+  - each `otlp` / `otlp/<name>` receiver and the protocols it enables;
+  - the health_check extension enabled in `service.extensions`, and its `path`.
+- **Moving them.** It writes a second config (`overlay.json`) and runs the collector with both `--config` flags; the collector merges maps.
+  - Each OTLP protocol and the health endpoint move to free `127.0.0.1` ports. The original config isn't rewritten, so quoting, comments and `${env:...}` keep their meaning.
+  - Lists are replaced, not merged. So adding `health_check/rules_otel` (when there's none) writes the whole `service.extensions` list, and the collector's own metrics get one pull reader on a free port in place of any configured `readers`. The default, `:8888`, would collide too.
+- **Other listeners** (prometheus, zipkin, …) are left alone, with a logged note: their config shapes vary too much to rewrite safely.
+- **The risk:** `print-config` is marked experimental, and its JSON format unstable. A version bump that changes it fails `//tests:boundary_test` and `//tests:json_test` loudly, not silently.
+
+### The sink
+
+The issue asked for a built-in backend so tests can assert on what the collector *exports*, not just that it ran. The sink is a `ThreadingHTTPServer` in the launcher (`private/otlp_sink.py`), standard library only:
+- **Protocols:** OTLP/HTTP in protobuf or JSON, gzip or deflate, plus Prometheus remote write 1.0 (snappy and protobuf). That covers `otlphttp` and `prometheusremotewrite`, the two usual ways to reach Mimir.
+- **Decoding:** protobuf is decoded by a small wire-format reader with the OTLP field numbers written out. Snappy is decoded in Python; a hand-built test covers its copy forms. Fields are read by number in any order: the collector's encoder writes a `Metric`'s data before its name, which the first manual run caught.
+- **Records:** one JSON line per span, data point or log record, flattened (name, type, value, attributes, resource attributes, scope), so tests filter with K=V, not nested OTLP JSON. `requests.log` records each request's status, path and record count.
+- **gRPC:** no `otlp` (gRPC) sink. HTTP/2 isn't in the standard library, and exporters can use `otlphttp`.
+
+**Failure modes.**
+- **`down`** closes the listening socket *and* shuts down every open connection. Otherwise a kept-alive exporter connection would keep being served by its handler thread.
+- **`up`** rebinds the same port, so the configured exporter endpoint stays valid.
+- **`fail CODE`** answers every request with CODE, for testing 429 and 503 retry paths.
+
+### The control endpoint and restarts
+
+- **Why HTTP:** helpers reach the launcher over a small HTTP server on a free port (`OTEL_CONTROL_URL`). Signals can't carry an answer, and `otel_collector_start` must report whether the restarted collector became healthy.
+- **Restarts** use the same argv and overlay, so the ports are unchanged.
+- **Deliberate stops:** a deliberately stopped collector (`stopped_on_purpose`) doesn't count as a crash; only an exit the test didn't ask for stops the server. A restart that fails leaves the collector stopped: the helper reports the error and the log, and the test decides.
+- **Signals:** the handler only sets an event and terminates the collector. It never waits or takes a lock, because control threads may hold the collector lock while starting it.
+
+### Trampoline
+
+`otel_collector_test` uses rules_valkey's trampoline:
+- it removes its own arguments before the test sees `"$@"`;
+- it runs the test rather than `exec`ing it, so its EXIT trap stops the launcher;
+- HUP, INT and TERM exit 129, 130 and 143.
+
+`//tests:server_cleanup_test` fails if the trampoline `exec`s; this was checked by making that change.
+
+### Upstream behaviour worth knowing
+
+`prometheusremotewrite` has its own retry, but no sending queue by default. While the backend is down it gives up after its 5 s timeout and drops the data (`Exporting failed. Dropping data.`). `otlphttp` queues and delivers after recovery. `//tests:boundary_test` asserts each behaviour as it is.
 
 ## Deferred (not v0.1.0)
 
@@ -135,3 +202,11 @@ enough to matter for a smoke fixture.
   Smoke would generate a Pod event and assert it lands at the
   collector. Different chart preset (`presets.kubernetesEvents`).
 - **Multi-version chart support** — single pin in v0.1.
+
+## Deferred (not v0.2.0)
+
+- **TLS** on the moved OTLP receivers.
+- **Moving non-OTLP listeners** (prometheus, zipkin, jaeger, …).
+- **A gRPC sink** (`otlp` exporter).
+- **Remote write 2.0** in the sink.
+- **A non-shell `otel_collector_test`.** Other languages use `otel_collector_server` through rules_itest and read the env file.

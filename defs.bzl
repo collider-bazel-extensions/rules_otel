@@ -1,54 +1,40 @@
-"""Public API for rules_otel."""
+"""Public API for rules_otel.
 
-load("@rules_kubectl//:defs.bzl", "kubectl_apply", "kubectl_apply_health_check")
+Config (build time):
+  otel_config                 — a collector config, checked by
+                                `otelcol-contrib validate` on every build.
 
-# In `mode: deployment` (smoke render), the chart emits one Deployment
-# named `<release>-opentelemetry-collector`. Release name pinned to
-# `otel` at maintainer-render time, so the Deployment is
-# `otel-opentelemetry-collector`. No CRDs (the operator chart ships
-# CRDs; this rule set wraps the plain collector chart).
-_OTEL_DEPLOYS = [
-    "otel-opentelemetry-collector",
-]
-_OTEL_ROLLOUTS = []
-_OTEL_CRD = ""
+Hermetic collector (test time):
+  otel_collector_server       — long-running otelcol-contrib on free ports,
+                                with an OTLP sink; writes
+                                $TEST_TMPDIR/<name>.env once healthy
+  otel_collector_health_check — pairs with otel_collector_server
+  otel_collector_test         — sh_test macro: auto-launched collector and
+                                otel_* helpers
 
-def otel_install(
-        name,
-        namespace = "otel",
-        wait_timeout = "300s",
-        **kwargs):
-    """Apply the pinned OpenTelemetry Collector manifest into `namespace`
-    and block until the collector Deployment is Available before idling.
+Cluster install (kind / production-shaped):
+  otel_install / otel_health_check — the pinned opentelemetry-collector
+                                Helm chart, pre-rendered
+"""
 
-    Drops into `itest_service.exe`. Wait timeout 300s — the
-    `otel/opentelemetry-collector-contrib` image is ~250MB.
-    """
-    extra_deploys = kwargs.pop("wait_for_deployments", [])
-    extra_rollouts = kwargs.pop("wait_for_rollouts", [])
-    kubectl_apply(
-        name = name,
-        manifests = ["@rules_otel//private/manifests:otel.yaml"],
-        namespace = namespace,
-        create_namespace = True,
-        server_side = True,
-        wait_for_deployments = list(_OTEL_DEPLOYS) + list(extra_deploys),
-        wait_for_rollouts = list(_OTEL_ROLLOUTS) + list(extra_rollouts),
-        wait_timeout = wait_timeout,
-        **kwargs
-    )
+load("//private:config.bzl", _otel_config = "otel_config")
+load("//private:install.bzl", _otel_health_check = "otel_health_check", _otel_install = "otel_install")
+load("//private:providers.bzl", _OtelBinaryInfo = "OtelBinaryInfo", _OtelConfigInfo = "OtelConfigInfo")
+load(
+    "//private:server.bzl",
+    _OtelCollectorInfo = "OtelCollectorInfo",
+    _otel_collector_health_check = "otel_collector_health_check",
+    _otel_collector_server = "otel_collector_server",
+)
+load("//private:test.bzl", _otel_collector_test = "otel_collector_test")
 
-def otel_health_check(
-        name,
-        namespace = "otel",
-        **kwargs):
-    """Readiness probe paired with `otel_install`."""
-    extra_deploys = kwargs.pop("wait_for_deployments", [])
-    extra_rollouts = kwargs.pop("wait_for_rollouts", [])
-    kubectl_apply_health_check(
-        name = name,
-        namespace = namespace,
-        wait_for_deployments = list(_OTEL_DEPLOYS) + list(extra_deploys),
-        wait_for_rollouts = list(_OTEL_ROLLOUTS) + list(extra_rollouts),
-        **kwargs
-    )
+otel_config = _otel_config
+otel_collector_server = _otel_collector_server
+otel_collector_health_check = _otel_collector_health_check
+otel_collector_test = _otel_collector_test
+otel_install = _otel_install
+otel_health_check = _otel_health_check
+
+OtelBinaryInfo = _OtelBinaryInfo
+OtelConfigInfo = _OtelConfigInfo
+OtelCollectorInfo = _OtelCollectorInfo

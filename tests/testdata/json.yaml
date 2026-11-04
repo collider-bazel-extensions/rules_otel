@@ -1,0 +1,28 @@
+# Two OTLP receivers, a health_check on a custom path, and an exporter
+# that sends OTLP/JSON.
+receivers:
+  otlp:
+    protocols:
+      http: {}
+  otlp/internal:
+    protocols:
+      grpc: {}
+      http: {}
+exporters:
+  otlphttp/json:
+    endpoint: ${env:BACKEND}
+    encoding: json
+    compression: none
+extensions:
+  health_check/custom:
+    endpoint: localhost:13133
+    path: /status
+service:
+  extensions: [health_check/custom]
+  pipelines:
+    logs:
+      receivers: [otlp, otlp/internal]
+      exporters: [otlphttp/json]
+    traces:
+      receivers: [otlp, otlp/internal]
+      exporters: [otlphttp/json]
