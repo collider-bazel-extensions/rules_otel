@@ -25,10 +25,11 @@ rules_otel/
 │   ├── providers.bzl         # OtelBinaryInfo, OtelConfigInfo
 │   ├── config.bzl            # otel_config (+ validation action)
 │   ├── launcher.py           # `check` (validate) and `serve` (overlay, collector, control)
-│   ├── otlp_sink.py          # the sink: OTLP/HTTP (pb/json, gzip) + remote write → JSONL
-│   ├── otel_tool.py          # test-side: send, sink count/wait/dump/mode, collector stop/start, selfmetric, logwait
+│   ├── otlp_sink.py          # the sink: OTLP/HTTP (pb/json, gzip) + remote write, any path prefix → JSONL
+│   ├── otel_tool.py          # test-side: send metric/sum/histogram/span/log, sink count/wait/dump/mode
+│   │                         # (--monotonic, --temporality), collector stop/start, selfmetric, logwait
 │   ├── testlib.sh            # otel_* shell helpers over otel_tool.py
-│   ├── server.bzl            # otel_collector_server, otel_collector_health_check, OtelCollectorInfo
+│   ├── server.bzl            # otel_collector_server (+ build-time config check), health check, OtelCollectorInfo
 │   ├── server.sh.tmpl        # runfiles resolution (into variables) → launcher.py serve
 │   ├── test.bzl              # otel_collector_test
 │   ├── otel_test_trampoline.sh   # server → env → test (not exec)
@@ -64,7 +65,8 @@ rules_otel/
   - the telemetry metrics readers.
 
   The user's file is never edited. Lists replace, maps merge.
-- **Sink.** `{sink}` in `env` / `collector_env` is its URL. Records go to `$OTEL_SINK_DIR/<signal>.jsonl`. `down` also drops kept-alive connections; `up` rebinds the same port.
+- **Build-time server check.** `otel_collector_server` validates config + `--set`/`--feature-gates` extra args (placeholders: otel_config env + server env, `{sink}` → http://127.0.0.1:4318). Run time: `print-config` gets the same `--set`s.
+- **Sink.** `{sink}` in `env` / `collector_env` is its URL; any path prefix (`{sink}/otlp`). Sums keep `monotonic` + `temporality`, histograms `temporality`. Records go to `$OTEL_SINK_DIR/<signal>.jsonl`. `down` also drops kept-alive connections; `up` rebinds the same port.
 - **Control endpoint.** `POST /collector/stop|start`, `/sink/<ok|down|code>`. A stop the test asked for isn't a crash; a failed restart leaves the collector stopped.
 - **Shutdown.** Handlers are installed before start. Once ready, they only set an event and terminate the collector (kill after 10 s).
 
@@ -96,10 +98,10 @@ To find stray collectors, use `pgrep -x otelcol-contrib` (an exact process name)
 
 ### Test results (last full run: 2026-11-04)
 
-All 21 test targets pass on Linux x86_64 (otelcol-contrib 0.151.0): 20 in `//tests/...` (8 of them analysis tests) and the kind smoke. Other checks:
-- 64 parallel runs of the collector tests left no stray collectors.
+All 20 test targets in `//tests/...` pass on Linux x86_64 (otelcol-contrib 0.151.0), 8 of them analysis tests; the kind smoke runs in CI. Other checks:
+- 6 parallel runs each of the 8 collector tests (v0.3.0) left no stray collectors.
 - Checked by hand:
-  - `bazel build //tests/testdata:bad_ref` fails with the collector's message (CI checks this too);
+  - `bazel build //tests/testdata:bad_ref` and `bazel build //tests:bad_set_server` fail with the collector's message (CI checks both);
   - the good configs build with network blocked in the sandbox;
   - switching the trampoline to `exec` fails `server_cleanup_test`;
   - all four platform archives fetch, with the binary at their root.
@@ -108,12 +110,12 @@ All 21 test targets pass on Linux x86_64 (otelcol-contrib 0.151.0): 20 in `//tes
 | Test target | What it verifies | Result |
 |---|---|---|
 | `//tests:config_check_test` | good config with placeholders; host env not used (unset vars named); unknown component, bad field, undefined pipeline ref | PASSED |
-| `//tests:api_test` | env file, send metric/sum/span/log, sink records (pb + gzip), filters, dump, own metrics, log wait, failed-wait message, args | PASSED |
+| `//tests:api_test` | env file, send metric/sum/histogram/span/log, sink records (pb + gzip) incl. sum monotonic/temporality and histogram temporality, filters, dump, own metrics, log wait, failed-wait message, args | PASSED |
 | `//tests:boundary_test` | fixed ports moved; backend down → `Exporting failed` naming it + queue; up → delivered; remote write decoded; 503 then recovery | PASSED |
-| `//tests:json_test` | second OTLP receiver's vars, custom health path, OTLP/JSON export | PASSED |
+| `//tests:json_test` | second OTLP receiver's vars, custom health path, OTLP/JSON export under `{sink}/otlp` incl. sum/histogram metadata | PASSED |
 | `//tests:restart_test` | stop (refused, health down), start on the same ports, start when running | PASSED |
 | `//tests:server_test` | direct run: extra_args, SIGTERM exit 0, env file removed, ports closed | PASSED |
-| `//tests:server_failure_test` | refused config (unset var named), exits at start, health timeout (collector stopped), test body skipped | PASSED |
+| `//tests:server_failure_test` | refused config (unset var named), runtime bad `--set` refused before start (named), exits at start, health timeout (collector stopped), test body skipped | PASSED |
 | `//tests:server_cleanup_test` | collector and sink stopped when an otel_collector_test ends | PASSED |
 | `//tests:itest_test` | otel_collector_server + health check as an itest_service | PASSED |
 | `//tests:health_check_test` | env-file probe | PASSED |

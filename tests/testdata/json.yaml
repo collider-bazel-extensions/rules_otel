@@ -1,5 +1,6 @@
 # Two OTLP receivers, a health_check on a custom path, and an exporter
-# that sends OTLP/JSON.
+# that sends OTLP/JSON to a path under its endpoint (BACKEND = {sink}/otlp,
+# as for Mimir's <distributor>/otlp).
 receivers:
   otlp:
     protocols:
@@ -25,4 +26,7 @@ service:
       exporters: [otlphttp/json]
     traces:
       receivers: [otlp, otlp/internal]
+      exporters: [otlphttp/json]
+    metrics:
+      receivers: [otlp]
       exporters: [otlphttp/json]

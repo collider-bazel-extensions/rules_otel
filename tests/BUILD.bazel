@@ -67,7 +67,7 @@ otel_collector_test(
 otel_collector_test(
     name = "json_test",
     srcs = ["json_test.sh"],
-    collector_env = {"BACKEND": "{sink}"},
+    collector_env = {"BACKEND": "{sink}/otlp"},
     config = "//tests/testdata:json",
 )
 
@@ -108,6 +108,15 @@ otel_collector_server(
     tags = ["manual"],
 )
 
+# Valid as built; server_failure_test passes bad arguments at run time
+# (the wrapper forwards its arguments to the collector).
+otel_collector_server(
+    name = "runtime_server",
+    tags = ["manual"],
+)
+
+# CI: `bazel build //tests:bad_set_server` must fail (the build-time check
+# of the config with its --set extra args).
 otel_collector_server(
     name = "bad_set_server",
     extra_args = ["--set=processors.batch.timeout=banana"],
@@ -120,10 +129,12 @@ otel_collector_server(
     tags = ["manual"],
 )
 
+# Passes the build-time check (otel_config's MIMIR_URL placeholder) but
+# fails at run time: no collector_env sets MIMIR_URL.
 otel_collector_test(
     name = "failing_otel_test",
     srcs = ["never_runs.sh"],
-    extra_args = ["--set=processors.batch.timeout=banana"],
+    config = "//tests/testdata:boundary",
     tags = ["manual"],
 )
 
@@ -132,7 +143,7 @@ sh_test(
     srcs = ["server_failure_test.sh"],
     args = [
         "$(rootpath :unset_env_server)",
-        "$(rootpath :bad_set_server)",
+        "$(rootpath :runtime_server)",
         "$(rootpath :slow_server)",
         # failing_otel_test's trampoline, run with the arguments its
         # sh_test would pass (a test target's args don't apply as data).
@@ -141,9 +152,9 @@ sh_test(
         "$(rootpath :failing_otel_test_inner)",
     ],
     data = [
-        ":bad_set_server",
         ":failing_otel_test_inner",
         ":failing_otel_test_otelcol",
+        ":runtime_server",
         ":slow_server",
         ":unset_env_server",
         "//private:otel_test_trampoline.sh",

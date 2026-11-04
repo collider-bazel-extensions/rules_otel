@@ -7,13 +7,19 @@ _otel() { python3 "$OTEL_TOOL" "$@"; }
 
 # otel_send_metric NAME [VALUE] [K=V...]  — a gauge point (default value 1)
 otel_send_metric() { _otel send metric "$@"; }
-# otel_send_sum NAME [VALUE] [K=V...]     — a monotonic cumulative sum point
+# otel_send_sum NAME [VALUE] [K=V...] [--temporality delta] [--monotonic false]
+#                                         — a sum point (default monotonic, cumulative)
 otel_send_sum()    { _otel send sum "$@"; }
+# otel_send_histogram NAME [VALUE] [K=V...] [--temporality delta]
+#                                         — one observation (default cumulative)
+otel_send_histogram() { _otel send histogram "$@"; }
 # otel_send_span NAME [K=V...]
 otel_send_span()   { _otel send span "$@"; }
 # otel_send_log BODY [K=V...] [--severity WARN]
 otel_send_log()    { _otel send log "$@"; }
 
+# Sink filters (anywhere in the arguments): --monotonic true|false (sums),
+# --temporality delta|cumulative|unspecified (sums, histograms).
 # otel_sink_count SIGNAL [NAME] [K=V...]  — prints how many records match
 otel_sink_count()  { _otel sink count "$@"; }
 # otel_sink_wait SIGNAL [NAME] [K=V...] [--min N] [--timeout S]

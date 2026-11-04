@@ -55,7 +55,7 @@ def _otel_config_impl(ctx):
     )
     return [
         DefaultInfo(files = depset([config])),
-        OtelConfigInfo(config = config, feature_gates = ctx.attr.feature_gates),
+        OtelConfigInfo(config = config, feature_gates = ctx.attr.feature_gates, env = ctx.attr.env),
         OutputGroupInfo(_validation = depset([marker])),
     ]
 

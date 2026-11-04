@@ -50,11 +50,13 @@ def _otel_collector_server_impl(ctx):
     config_line = ""
     gates = []
     config = None
+    check_env_values = {}
     if ctx.attr.config:
         info = ctx.attr.config[OtelConfigInfo]
         config = info.config
         files.append(config)
         gates = info.feature_gates
+        check_env_values.update(info.env)
 
         # Resolved into a variable first: a failing $(resolve) inside an
         # argument list would not stop the script under `set -e`.
@@ -82,6 +84,36 @@ def _otel_collector_server_impl(ctx):
         },
         is_executable = True,
     )
+    # Build-time check of the config this server will run: the config (or
+    # the built-in one) plus the `--set` / `--feature-gates` extra args,
+    # with the config's placeholders and this server's env ({sink} becomes
+    # a placeholder URL). A bad --set fails `bazel build`, not the test.
+    check_env_values.update(ctx.attr.env)
+    marker = ctx.actions.declare_file(ctx.label.name + ".config_checked")
+    args = ctx.actions.args()
+    args.add(ctx.file._launcher)
+    args.add("check")
+    args.add("--kind", "otel_collector_server")
+    args.add("--otelcol", oc.otelcol)
+    args.add("--marker", marker)
+    label = str(ctx.label)
+    args.add("--label", label[2:] if label.startswith("@@//") else label)
+    if config:
+        args.add("--config", config)
+    args.add_all(check_env(ctx.label, check_env_values))
+    if gates:
+        args.add("--feature-gates", ",".join(gates))
+    args.add_all(ctx.attr.extra_args, format_each = "--extra-arg=%s")
+    ctx.actions.run_shell(
+        command = 'exec python3 "$@"',
+        arguments = [args],
+        inputs = [ctx.file._launcher, oc.otelcol] + files,
+        outputs = [marker],
+        use_default_shell_env = True,
+        mnemonic = "OtelCheckServerConfig",
+        progress_message = "Checking collector config of %{label}",
+    )
+
     runfiles = ctx.runfiles(files = [
         wrapper,
         ctx.file._launcher,
@@ -93,6 +125,7 @@ def _otel_collector_server_impl(ctx):
     return [
         DefaultInfo(executable = wrapper, runfiles = runfiles),
         OtelCollectorInfo(binary = oc, config = config),
+        OutputGroupInfo(_validation = depset([marker])),
     ]
 
 otel_collector_server = rule(

@@ -135,6 +135,13 @@ v0.2.0 adds the toolchain, `otel_config`, the hermetic collector with its sink a
 - **The check:** the validation action runs `otelcol-contrib validate`. It checks the config against the real component factories (unknown types, unknown fields, the pipeline graph) without starting anything, in about 0.1 s.
 - **A clean environment:** the collector runs with only `otel_config(env = ...)` (plus `HOME`). A `${env:X}` that passes on a developer's machine because their shell exports X would otherwise fail in CI, or the reverse. When the check fails, the launcher names the unset `${env:X}` references that have no default.
 
+### `otel_collector_server`'s build-time check (v0.3, #6)
+
+`--set` overrides in `extra_args` change the config the server runs, but in v0.2 only `otel_config` was checked, without them. So a typo in a `--set` key only failed when the test ran, with a less specific message. Now:
+- **At build time,** the server runs the same validation action as `otel_config`, on the config plus the `--set` / `--feature-gates` among its `extra_args`. Other arguments don't change the config, and some (`--config=<path>`) can't be resolved at build time. The built-in config is checked the same way.
+- **The environment** is the `otel_config`'s `env` placeholders, overridden by the server's `env`. `{sink}` becomes `http://127.0.0.1:4318`, so an exporter endpoint built from it validates.
+- **At run time,** `print-config` gets the same `--set`s, including any passed to the server on the command line. So the resolved config used for moving the listeners is the one that runs, and a refusal names the args before the collector starts.
+
 ### `otel_collector_server`: moving the listeners
 
 A production config listens on fixed ports (`:4317`, `:4318`, `:13133`, `:8888`), and parallel tests can't share them.
@@ -154,6 +161,10 @@ The issue asked for a built-in backend so tests can assert on what the collector
 - **Protocols:** OTLP/HTTP in protobuf or JSON, gzip or deflate, plus Prometheus remote write 1.0 (snappy and protobuf). That covers `otlphttp` and `prometheusremotewrite`, the two usual ways to reach Mimir.
 - **Decoding:** protobuf is decoded by a small wire-format reader with the OTLP field numbers written out. Snappy is decoded in Python; a hand-built test covers its copy forms. Fields are read by number in any order: the collector's encoder writes a `Metric`'s data before its name, which the first manual run caught.
 - **Records:** one JSON line per span, data point or log record, flattened (name, type, value, attributes, resource attributes, scope), so tests filter with K=V, not nested OTLP JSON. `requests.log` records each request's status, path and record count.
+- **Sum and histogram metadata (v0.3, #6):**
+  - Sum points carry `monotonic` and `temporality`; histogram and exponential-histogram points carry `temporality`. These live on the `Sum` / `Histogram` message (fields 2 and 3), not on the points, so the decoder copies them onto each point. JSON input accepts the enum as a number or as `AGGREGATION_TEMPORALITY_*`.
+  - Why: a Mimir-bound counter must be a *monotonic* sum to become a Prometheus `_total` counter. An up-down counter is stored as a gauge, so "a sum arrived" isn't enough to test.
+- **Any path prefix (v0.3, #6):** production exporters often point at a path (Mimir's `<distributor>/otlp`), and `otlphttp` appends `/v1/<signal>` to it. So the sink routes on the path's *suffix* (`/v1/traces|metrics|logs`, `/api/v1/push`), and a test config can keep production's `${env:MIMIR_URL}/otlp` shape with `MIMIR_URL={sink}`.
 - **gRPC:** no `otlp` (gRPC) sink. HTTP/2 isn't in the standard library, and exporters can use `otlphttp`.
 
 **Failure modes.**
@@ -203,7 +214,7 @@ The issue asked for a built-in backend so tests can assert on what the collector
   collector. Different chart preset (`presets.kubernetesEvents`).
 - **Multi-version chart support** — single pin in v0.1.
 
-## Deferred (not v0.2.0)
+## Deferred (not v0.3.0)
 
 - **TLS** on the moved OTLP receivers.
 - **Moving non-OTLP listeners** (prometheus, zipkin, jaeger, …).
