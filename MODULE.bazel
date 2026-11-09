@@ -22,7 +22,7 @@ chart deploys), opentelemetry-collector chart 0.153.0.
 
 module(
     name = "rules_otel",
-    version = "0.3.0",
+    version = "0.3.1",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.8.2")

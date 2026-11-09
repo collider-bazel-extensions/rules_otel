@@ -221,3 +221,7 @@ The issue asked for a built-in backend so tests can assert on what the collector
 - **A gRPC sink** (`otlp` exporter).
 - **Remote write 2.0** in the sink.
 - **A non-shell `otel_collector_test`.** Other languages use `otel_collector_server` through rules_itest and read the env file.
+
+## Release archive contents (v0.3.1)
+
+`tests/` and `tools/` are `export-ignore` (`.gitattributes`): their packages load the dev-only `rules_itest`, `rules_kind` and `rules_helm`, which made `@rules_otel//...` unloadable for consumers. GitHub's tag tarballs honour it; a `git_override` clone still contains them. `REPO.bazel` `ignore_directories` isn't used because it would also hide them from this repo's own `bazel test`. The dev-only `use_extension("//tools:extensions.bzl", ...)` is skipped for a non-root module. `examples/` (no BUILD files) still ships. CI's `consumer` job (`.github/consumer/check.sh`) queries `//...` from the commit's `git archive`. Same fix as rules_kubectl#5 / rules_atlas#12.

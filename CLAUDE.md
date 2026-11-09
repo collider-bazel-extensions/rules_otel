@@ -129,3 +129,7 @@ All 20 test targets in `//tests/...` pass on Linux x86_64 (otelcol-contrib 0.151
 - Only OTLP receivers, the health_check extension and the collector's own metrics move to free ports.
 - The sink speaks OTLP/HTTP and remote write 1.0, not gRPC.
 - `otel_collector_test` wraps `sh_test`; other languages use `otel_collector_server` through rules_itest.
+
+## Release archive
+
+`.gitattributes` export-ignores `tests/` and `tools/`, so they may load dev-only modules; nothing else may. CI's `consumer` job checks that `@rules_otel//...` loads from the commit's `git archive` (`.github/consumer/check.sh`).
