@@ -8,6 +8,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  consumer:
+    # The commit's release archive (git archive honours .gitattributes
+    # export-ignore, as GitHub's tag tarballs do) must load with //... for a
+    # consumer.
+    name: consumer (ubuntu-latest, git archive)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: bazel query @rules_otel//... from the archive
+        run: .github/consumer/check.sh "$RUNNER_TEMP/consumer"
+
   test:
     # Everything that needs no container runtime: the config check, the
     # hermetic collector (otel_collector_test / otel_collector_server, the

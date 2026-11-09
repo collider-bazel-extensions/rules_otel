@@ -17,11 +17,11 @@ No host collector needed. The binary is the upstream `otelcol-contrib` release f
 ## Install (Bzlmod)
 
 ```python
-bazel_dep(name = "rules_otel", version = "0.3.0")
+bazel_dep(name = "rules_otel", version = "0.3.1")
 git_override(
     module_name = "rules_otel",
     remote = "https://github.com/collider-bazel-extensions/rules_otel",
-    tag = "v0.3.0",
+    tag = "v0.3.1",
 )
 
 # rules_otel depends on rules_kubectl, which isn't in the BCR either.
@@ -43,6 +43,8 @@ archive_override(
     integrity = "sha256-/bxAh/wtLGCDaG0lCkx9XN3J4hpcnvohh7Hm1QGlsc4=",
 )
 ```
+
+The release archive (the tag tarball) leaves out `tests/` and `tools/`, whose packages load dev-only modules (`rules_itest`, `rules_kind`, `rules_helm`), so `bazel query @rules_otel//...` works for consumers (since v0.3.1). A `git_override` clone still contains them; name packages instead (for example `@rules_otel//:all`).
 
 That's all: rules_otel registers its toolchain, and fetches the binary only for the platform a build needs. To pick another pinned version, name it in your own `MODULE.bazel` (only the root module's tag counts):
 
