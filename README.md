@@ -38,9 +38,9 @@ To pin by archive and integrity instead of a git tag, replace the first `git_ove
 ```python
 archive_override(
     module_name = "rules_otel",
-    urls = ["https://github.com/collider-bazel-extensions/rules_otel/archive/refs/tags/v0.3.0.tar.gz"],
-    strip_prefix = "rules_otel-0.3.0",
-    integrity = "sha256-/bxAh/wtLGCDaG0lCkx9XN3J4hpcnvohh7Hm1QGlsc4=",
+    urls = ["https://github.com/collider-bazel-extensions/rules_otel/archive/refs/tags/v0.3.1.tar.gz"],
+    strip_prefix = "rules_otel-0.3.1",
+    integrity = "sha256-+jIf06ToM8R0tJOCnqCpfPmrC0NQqlj0flVmXT7Paw8=",
 )
 ```
 
