@@ -40,7 +40,7 @@ archive_override(
     module_name = "rules_otel",
     urls = ["https://github.com/collider-bazel-extensions/rules_otel/archive/refs/tags/v0.3.2.tar.gz"],
     strip_prefix = "rules_otel-0.3.2",
-    integrity = "sha256-+jIf06ToM8R0tJOCnqCpfPmrC0NQqlj0flVmXT7Paw8=",
+    integrity = "sha256-N84jrhFFZoH/cE6KXJWvBX35P03PojoGUBHe/OEtU5E=",
 )
 ```
 
